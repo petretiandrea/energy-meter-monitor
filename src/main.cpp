@@ -10,129 +10,133 @@
 #include <esp_event_loop.h>
 #include <esp_err.h>
 #include <nvs_flash.h>
+#include "esp_sleep.h"
+#include "esp_attr.h"
+#include "rom/rtc.h"
+#include "rom/ets_sys.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "soc/rtc_cntl_reg.h"
+#include "soc/rtc_io_reg.h"
+#include "soc/uart_reg.h"
+#include "soc/timer_group_reg.h"
 #include "PulseMeter.h"
 
 extern "C" void app_main(void);
 
+#define PULSE_CNT_GPIO_NUM GPIO_NUM_32
+#define PULSE_CNT_RTC_GPIO_NUM 9
+
 const int INTERNAL_FILTER = 100; // ms
-const gpio_num_t GPIO_LED = GPIO_NUM_33;
-const adc_atten_t ATTENUATION = ADC_ATTEN_DB_11; // max input 2.2v
-const adc1_channel_t PHOTORESISTOR_PIN = ADC1_CHANNEL_4;
-const adc_bits_width_t PHOTORESISTOR_PRECISION = ADC_WIDTH_BIT_12;
 
 PulseMeter pulseMeter;
 
-void scan_wifi();
+// Pulse counter value, stored in RTC_SLOW_MEM
+static size_t RTC_DATA_ATTR s_pulse_count;
+static size_t RTC_DATA_ATTR s_max_pulse_count;
+static uint32_t RTC_DATA_ATTR last_detected_edge_us;
+static uint32_t RTC_DATA_ATTR last_valid_edge_us;
+static uint32_t RTC_DATA_ATTR filter_us;
+static uint32_t RTC_DATA_ATTR total_pulses;
 
-void blink_task(void* parameters) {
-    while(1) {
-        vTaskDelay(2000 / portTICK_PERIOD_MS);
-        gpio_set_level(GPIO_LED, 1);
-        vTaskDelay(150 / portTICK_PERIOD_MS);
-        gpio_set_level(GPIO_LED, 0);
-    }
-}
+#define PULSE_CNT_IS_LOW() \
+    ((REG_GET_FIELD(RTC_GPIO_IN_REG, RTC_GPIO_IN_NEXT) \
+            & BIT(PULSE_CNT_RTC_GPIO_NUM)) == 0)
+
+// Function which runs after exit from deep sleep
+static void RTC_IRAM_ATTR wake_stub();
 
 void app_main(void) {
-    
-    gpio_reset_pin(GPIO_LED);
-    gpio_set_direction(GPIO_LED, GPIO_MODE_OUTPUT);
 
-    xTaskCreate(
-        blink_task,
-        "blink_task",
-        2048,
-        NULL,
-        5,
-        NULL
-    );
-
-    scan_wifi();
-    pulseMeter.setup();
-
-    while (1) {
-        pulseMeter.update();
-        vTaskDelay(100 / portTICK_PERIOD_MS);
+    if (rtc_get_reset_reason(0) == DEEPSLEEP_RESET) {
+        printf("Wake up from deep sleep\n");
+        printf("Pulse count=%d\n", s_pulse_count);
+    } else {
+        printf("Not a deep sleep wake up\n");
     }
-    // adc1_config_width(PHOTORESISTOR_PRECISION);
-    // adc1_config_channel_atten(PHOTORESISTOR_PIN, ATTENUATION);
-    
-    // gpio_reset_pin(GPIO_LED);
-    // gpio_set_direction(GPIO_LED, GPIO_MODE_OUTPUT);
 
-    // int64_t last_valid_edge_us = 0;
-    // int64_t timeout_us = 0;
-    
-    // int64_t pulse_width_us = 0;
+    s_pulse_count = 0;
+    s_max_pulse_count = 20;
+    last_detected_edge_us = 0;
+    last_valid_edge_us = 0;
+    total_pulses = 0;
+    filter_us = 100000;
 
-    // while(1) {
-    //     const int64_t now = esp_timer_get_time();
-    //     const int64_t since_last_edge_us = now - last_valid_edge_us; // microseconds
+    gpio_config_t conf{};
+    conf.pin_bit_mask = 1ULL << static_cast<uint32_t>(PULSE_CNT_GPIO_NUM);
+    conf.mode = GPIO_MODE_INPUT;
+    conf.pull_up_en = GPIO_PULLUP_DISABLE;
+    conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    conf.intr_type = GPIO_INTR_DISABLE;
+    gpio_config(&conf);
+    gpio_set_drive_capability(PULSE_CNT_GPIO_NUM, GPIO_DRIVE_CAP_DEFAULT);
+    gpio_hold_en(PULSE_CNT_GPIO_NUM);
 
-    //     if (last_valid_edge_us != 0 && since_last_edge_us > timeout_us) {
-    //         std::cout << "No pulse detected" << std::endl;
-    //         pulse_width_us = 0;
-    //         last_valid_edge_us = 0;
-    //     }
+    printf("Going to deep sleep in 1 second\n");
+    printf("Will wake up after %d pulses\n", s_max_pulse_count);
+    vTaskDelay(1000/portTICK_PERIOD_MS);
 
-    //     int value = adc1_get_raw(PHOTORESISTOR_PIN);
-    //     std::cout << "Value: " << value << std::endl;
-    //     if (value > 2000) {
-    //         gpio_set_level(GPIO_LED, 1);
-    //         vTaskDelay(1000 / portTICK_PERIOD_MS);
-    //     }
-    //     gpio_set_level(GPIO_LED, 0);
-    //     vTaskDelay(2000 / portTICK_PERIOD_MS);
-    // }
+    gpio_deep_sleep_hold_en();
+    esp_set_deep_sleep_wake_stub(&wake_stub);
 
-    vTaskDelay(50 * 1000 / portTICK_PERIOD_MS);
+    esp_sleep_enable_ext1_wakeup(1ULL << static_cast<uint32_t>(PULSE_CNT_GPIO_NUM), ESP_EXT1_WAKEUP_ANY_HIGH);
+
+    // Enter deep sleep
+    esp_deep_sleep_start();
 };
 
-static esp_err_t event_handler(void *ctx, system_event_t *event)
+static const char RTC_RODATA_ATTR wake_pulse_count[] = "Pulses: %d\n";
+static const char RTC_RODATA_ATTR no_rising_edge[] = "Not rising edge\n";
+static const char RTC_RODATA_ATTR max_reached[] = "Max reached \n";
+
+static uint64_t RTC_IRAM_ATTR rtc_time_get()
 {
-    return ESP_OK;
+    SET_PERI_REG_MASK(RTC_CNTL_TIME_UPDATE_REG, RTC_CNTL_TIME_UPDATE);
+    while (GET_PERI_REG_MASK(RTC_CNTL_TIME_UPDATE_REG, RTC_CNTL_TIME_VALID) == 0) {
+        ets_delay_us(1); // might take 1 RTC slowclk period, don't flood RTC bus
+    }
+    SET_PERI_REG_MASK(RTC_CNTL_INT_CLR_REG, RTC_CNTL_TIME_VALID_INT_CLR);
+    uint64_t t = READ_PERI_REG(RTC_CNTL_TIME0_REG);
+    t |= ((uint64_t) READ_PERI_REG(RTC_CNTL_TIME1_REG)) << 32;
+    return t;
 }
 
-static char* getAuthModeName(wifi_auth_mode_t auth_mode) {
-	
-	char *names[] = {"OPEN", "WEP", "WPA PSK", "WPA2 PSK", "WPA WPA2 PSK", "MAX"};
-	return names[auth_mode];
-}
+static void RTC_IRAM_ATTR wake_stub()
+{
+    const uint32_t now = rtc_time_get();
 
-void scan_wifi() {
-    ESP_ERROR_CHECK(nvs_flash_init());
+    // We only look at rising edges
+    if (PULSE_CNT_IS_LOW()) {
+        ets_printf(no_rising_edge);
+    } else {
+        // Check to see if we should filter this edge out
+        if ((now - last_detected_edge_us) >= filter_us) {
+            //ets_printf("Filtered: %d, Last valid us: %d", (now - last_detected_edge_us), last_valid_edge_us);
+            // Don't measure the first valid pulse (we need at least two pulses to measure the width)
+            if (last_valid_edge_us != 0) {
+                // pulse_width_us = (now - last_valid_edge_us);
+            }
+            s_pulse_count++;
+            last_valid_edge_us = now;
+            ets_printf(wake_pulse_count, s_pulse_count);
+        }
 
-    tcpip_adapter_init();
-    ESP_ERROR_CHECK(esp_event_loop_init(event_handler, NULL));
+        last_detected_edge_us = now;
+    }
 
-    wifi_init_config_t wifi_config = WIFI_INIT_CONFIG_DEFAULT();
-	ESP_ERROR_CHECK(esp_wifi_init(&wifi_config));
-	ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-	ESP_ERROR_CHECK(esp_wifi_start());
+    if (s_pulse_count >= s_max_pulse_count) {
+        ets_printf(max_reached);
+        esp_default_wake_deep_sleep();
+        esp_wake_deep_sleep();
+        return;
+    }
 
-    // configure and run the scan process in blocking mode
-	wifi_scan_config_t scan_config = {
-		.ssid = 0,
-		.bssid = 0,
-		.channel = 0,
-        .show_hidden = true
-    };
-
-    printf("Start scanning...");
-	ESP_ERROR_CHECK(esp_wifi_scan_start(&scan_config, true));
-	printf(" completed!\n");
-	printf("\n");
-
-    uint16_t ap_num = 20;
-	wifi_ap_record_t ap_records[20];
-	ESP_ERROR_CHECK(esp_wifi_scan_get_ap_records(&ap_num, ap_records));
-	
-	// print the list 
-	printf("Found %d access points:\n", ap_num);
-	printf("\n");
-	printf("               SSID              | Channel | RSSI |   Auth Mode \n");
-	printf("----------------------------------------------------------------\n");
-	for(int i = 0; i < ap_num; i++)
-		printf("%32s | %7d | %4d | %12s\n", (char *)ap_records[i].ssid, ap_records[i].primary, ap_records[i].rssi, getAuthModeName(ap_records[i].authmode));
-	printf("----------------------------------------------------------------\n");
+    while (REG_GET_FIELD(UART_STATUS_REG(0), UART_ST_UTX_OUT));
+    REG_WRITE(RTC_ENTRY_ADDR_REG, (uint32_t)&wake_stub);
+    // Go to sleep.
+    CLEAR_PERI_REG_MASK(RTC_CNTL_STATE0_REG, RTC_CNTL_SLEEP_EN);
+    SET_PERI_REG_MASK(RTC_CNTL_STATE0_REG, RTC_CNTL_SLEEP_EN);
+    // A few CPU cycles may be necessary for the sleep to start...
+    ets_delay_us(100);
+    // never reaches here.
 }
