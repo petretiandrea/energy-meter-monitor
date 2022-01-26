@@ -7,7 +7,7 @@
 #include <esp_timer.h>
 #include <esp_log.h>
 #include <esp_wifi.h>
-#include <esp_event_loop.h>
+#include <esp_event.h>
 #include <esp_err.h>
 #include <nvs_flash.h>
 #include "esp_sleep.h"
@@ -21,122 +21,98 @@
 #include "soc/uart_reg.h"
 #include "soc/timer_group_reg.h"
 #include "PulseMeter.h"
+#include "PulseCounter.h"
+#include "rtc_safe_utils.h"
+#include <esp_system.h>
 
 extern "C" void app_main(void);
 
-#define PULSE_CNT_GPIO_NUM GPIO_NUM_32
-#define PULSE_CNT_RTC_GPIO_NUM 9
+#define PULSE_GPIO_NUM GPIO_NUM_32
 
-const int INTERNAL_FILTER = 100; // ms
+const RTC_DATA_ATTR uint64_t WAKE_UP_TIME = 0 * 1000 * 1000; // 30s
+const uint64_t INTERNAL_FILTER_US = 100 * 1000; // 100ms
+const uint64_t PULSE_TIMEOUT_US = 5 * 60 * 1000 * 1000; // 5min
 
 PulseMeter pulseMeter;
 
 // Pulse counter value, stored in RTC_SLOW_MEM
-static size_t RTC_DATA_ATTR s_pulse_count;
-static size_t RTC_DATA_ATTR s_max_pulse_count;
-static uint32_t RTC_DATA_ATTR last_detected_edge_us;
-static uint32_t RTC_DATA_ATTR last_valid_edge_us;
-static uint32_t RTC_DATA_ATTR filter_us;
-static uint32_t RTC_DATA_ATTR total_pulses;
-
-#define PULSE_CNT_IS_LOW() \
-    ((REG_GET_FIELD(RTC_GPIO_IN_REG, RTC_GPIO_IN_NEXT) \
-            & BIT(PULSE_CNT_RTC_GPIO_NUM)) == 0)
+static uint64_t RTC_DATA_ATTR last_wake_time_us;
+static PulseCounterConfig RTC_DATA_ATTR pulse_config {
+    .gpio_num = PULSE_GPIO_NUM,
+    .drive_cap = GPIO_DRIVE_CAP_0,
+    .filter_us = INTERNAL_FILTER_US,
+    .pulse_timeout_us = PULSE_TIMEOUT_US
+};
+static PulseCounterData RTC_DATA_ATTR data;
 
 // Function which runs after exit from deep sleep
-static void RTC_IRAM_ATTR wake_stub();
+static void RTC_IRAM_ATTR wake_stub_pulse_counter();
 
 void app_main(void) {
 
-    if (rtc_get_reset_reason(0) == DEEPSLEEP_RESET) {
+    auto wakeup_reason = rtc_get_reset_reason(0);
+
+    if (wakeup_reason == DEEPSLEEP_RESET) {
+        gpio_reset_pin(GPIO_NUM_33);
+        gpio_set_direction(GPIO_NUM_33, GPIO_MODE_OUTPUT);
+        gpio_set_level(GPIO_NUM_33, 1);
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+        gpio_set_level(GPIO_NUM_33, 0);
         printf("Wake up from deep sleep\n");
-        printf("Pulse count=%d\n", s_pulse_count);
+        printf("Pulse count=%lld\n", data.pulse_count);
+        if (data.last_pulse_width_us > 0) {
+            const uint32_t pulse_width_ms = data.last_pulse_width_us / 1000;
+            auto consume = (60.0f * 1000.0f) / pulse_width_ms;
+            printf("Consume: %lf\n", consume);
+        }
     } else {
-        printf("Not a deep sleep wake up\n");
+        // first boot
+        printf("First boot...setting up initialization phase\n");
+        last_wake_time_us = 0;
+        data.initialize();
     }
 
-    s_pulse_count = 0;
-    s_max_pulse_count = 20;
-    last_detected_edge_us = 0;
-    last_valid_edge_us = 0;
-    total_pulses = 0;
-    filter_us = 100000;
+    // Setup pulse counter pins
+    PulseCounter::setup(&pulse_config);
 
-    gpio_config_t conf{};
-    conf.pin_bit_mask = 1ULL << static_cast<uint32_t>(PULSE_CNT_GPIO_NUM);
-    conf.mode = GPIO_MODE_INPUT;
-    conf.pull_up_en = GPIO_PULLUP_DISABLE;
-    conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    conf.intr_type = GPIO_INTR_DISABLE;
-    gpio_config(&conf);
-    gpio_set_drive_capability(PULSE_CNT_GPIO_NUM, GPIO_DRIVE_CAP_DEFAULT);
-    gpio_hold_en(PULSE_CNT_GPIO_NUM);
+    // TODO: send data using ESP-NOW
 
-    printf("Going to deep sleep in 1 second\n");
-    printf("Will wake up after %d pulses\n", s_max_pulse_count);
-    vTaskDelay(1000/portTICK_PERIOD_MS);
-
+    printf("Going to deep...\n");
+    
+    // reatain gpio pad and Enter deep sleep
+    gpio_hold_en(pulse_config.gpio_num);
     gpio_deep_sleep_hold_en();
-    esp_set_deep_sleep_wake_stub(&wake_stub);
-
-    esp_sleep_enable_ext1_wakeup(1ULL << static_cast<uint32_t>(PULSE_CNT_GPIO_NUM), ESP_EXT1_WAKEUP_ANY_HIGH);
-
-    // Enter deep sleep
+    esp_set_deep_sleep_wake_stub(&wake_stub_pulse_counter);
+    esp_sleep_enable_ext1_wakeup(1ULL << static_cast<uint32_t>(pulse_config.gpio_num), ESP_EXT1_WAKEUP_ANY_HIGH);
+    
+    // set last wake time before go to sleep. Assigned here automatically exclude the time spent while is wake.
+    last_wake_time_us = rtc_time_get_us();
     esp_deep_sleep_start();
 };
 
-static const char RTC_RODATA_ATTR wake_pulse_count[] = "Pulses: %d\n";
-static const char RTC_RODATA_ATTR no_rising_edge[] = "Not rising edge\n";
-static const char RTC_RODATA_ATTR max_reached[] = "Max reached \n";
-
-static uint64_t RTC_IRAM_ATTR rtc_time_get()
+static void RTC_IRAM_ATTR wake_stub_pulse_counter()
 {
-    SET_PERI_REG_MASK(RTC_CNTL_TIME_UPDATE_REG, RTC_CNTL_TIME_UPDATE);
-    while (GET_PERI_REG_MASK(RTC_CNTL_TIME_UPDATE_REG, RTC_CNTL_TIME_VALID) == 0) {
-        ets_delay_us(1); // might take 1 RTC slowclk period, don't flood RTC bus
-    }
-    SET_PERI_REG_MASK(RTC_CNTL_INT_CLR_REG, RTC_CNTL_TIME_VALID_INT_CLR);
-    uint64_t t = READ_PERI_REG(RTC_CNTL_TIME0_REG);
-    t |= ((uint64_t) READ_PERI_REG(RTC_CNTL_TIME1_REG)) << 32;
-    return t;
-}
+    const uint64_t now = rtc_time_get_us();
 
-static void RTC_IRAM_ATTR wake_stub()
-{
-    const uint32_t now = rtc_time_get();
+    // We wait for signal go to low, looking at rising edges.
+    // So while is true wait
+    while (!PulseCounter::is_low(&pulse_config));
 
-    // We only look at rising edges
-    if (PULSE_CNT_IS_LOW()) {
-        ets_printf(no_rising_edge);
-    } else {
-        // Check to see if we should filter this edge out
-        if ((now - last_detected_edge_us) >= filter_us) {
-            //ets_printf("Filtered: %d, Last valid us: %d", (now - last_detected_edge_us), last_valid_edge_us);
-            // Don't measure the first valid pulse (we need at least two pulses to measure the width)
-            if (last_valid_edge_us != 0) {
-                // pulse_width_us = (now - last_valid_edge_us);
-            }
-            s_pulse_count++;
-            last_valid_edge_us = now;
-            ets_printf(wake_pulse_count, s_pulse_count);
-        }
-
-        last_detected_edge_us = now;
-    }
-
-    if (s_pulse_count >= s_max_pulse_count) {
-        ets_printf(max_reached);
+    PulseCounter::update_pulses_if_needed(&data, &pulse_config, now);
+    
+    if (now - last_wake_time_us >= WAKE_UP_TIME) {
         esp_default_wake_deep_sleep();
         esp_wake_deep_sleep();
         return;
     }
 
+    // flush uart buffer
     while (REG_GET_FIELD(UART_STATUS_REG(0), UART_ST_UTX_OUT));
-    REG_WRITE(RTC_ENTRY_ADDR_REG, (uint32_t)&wake_stub);
+    // set wake stub
+    REG_WRITE(RTC_ENTRY_ADDR_REG, (uint32_t)&wake_stub_pulse_counter);
     // Go to sleep.
     CLEAR_PERI_REG_MASK(RTC_CNTL_STATE0_REG, RTC_CNTL_SLEEP_EN);
     SET_PERI_REG_MASK(RTC_CNTL_STATE0_REG, RTC_CNTL_SLEEP_EN);
     // A few CPU cycles may be necessary for the sleep to start...
     ets_delay_us(100);
-    // never reaches here.
 }
