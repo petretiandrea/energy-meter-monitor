@@ -23,12 +23,16 @@
 #include "pulse_meter/PulseCounter.h"
 #include "rtc_safe_utils.h"
 #include <esp_system.h>
+#include <esp_now.h>
+#include <string.h>
+#include "communication/ESPNowSender.h"
+#include "model/EnergyMeterMeasure.h"
 
 extern "C" void app_main(void);
 
 #define PULSE_GPIO_NUM GPIO_NUM_32
 
-const RTC_DATA_ATTR uint64_t WAKE_UP_TIME = 10 * 1000 * 1000; // 30s
+const RTC_DATA_ATTR uint64_t WAKE_UP_TIME = 30 * 1000 * 1000; // 30s
 const uint64_t INTERNAL_FILTER_US = 100 * 1000; // 100ms
 const uint64_t PULSE_TIMEOUT_US = 5 * 60 * 1000 * 1000; // 5min
 
@@ -45,8 +49,10 @@ static PulseCounterData RTC_DATA_ATTR data;
 // Function which runs after exit from deep sleep
 static void RTC_IRAM_ATTR wake_stub_pulse_counter();
 
-void app_main(void) {
+uint8_t peer[] = { 0x4a, 0x3f, 0xda, 0x0d, 0xbe, 0xb0 };
+ESPNowSender sender(peer);
 
+void app_main(void) {
     // First of all setup pulse counter and attach interrupt. 
     // This avoid loosing pulse while chip is wake.
     PulseCounter::setup(&pulse_config);
@@ -56,12 +62,13 @@ void app_main(void) {
 
     if (wakeup_reason == DEEPSLEEP_RESET) {
         printf("Wake up from deep sleep\n");
-        printf("Pulse count=%lld\n", data.pulse_count);
-        if (data.last_pulse_width_us > 0) {
-            const uint32_t pulse_width_ms = data.last_pulse_width_us / 1000;
-            auto consume = (60.0f * 1000.0f) / pulse_width_ms;
-            printf("Consume: %lf\n", consume);
-        }
+        auto toSend = EnergyMeterMeasure {
+            .current_consumption = data.last_pulse_width_us > 0 ? (60.0f * 1000.0f) / (data.last_pulse_width_us / 1000.0f) : 0.0f,
+            .pulse_count = data.pulse_count
+        };
+        nvs_flash_init();
+        sender.connect();
+        sender.send_message((uint8_t*) &toSend, sizeof(toSend));
     } else {
         // first boot
         printf("First boot...setting up initialization phase\n");
