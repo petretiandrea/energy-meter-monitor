@@ -7,7 +7,7 @@
 
 bool ESPNowSender::is_initialized = false;
 
-ESPNowSender::ESPNowSender(const uint8_t targetAddress[6])
+ESPNowSender::ESPNowSender(const uint8_t targetAddress[6], const bool enable_long_range) : use_long_range(enable_long_range)
 {
     memcpy(this->peerInfo.peer_addr, targetAddress, 6);
 }
@@ -34,6 +34,10 @@ void ESPNowSender::initialize_wifi() {
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
+
+    if (this->use_long_range) {
+        ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B|WIFI_PROTOCOL_11G|WIFI_PROTOCOL_11N|WIFI_PROTOCOL_LR));
+    }
 };
 
 void ESPNowSender::initialize_espnow() {

@@ -4,7 +4,7 @@
 [] Use a `throttle_average` like EPSHome
 [x] Optimize deep sleep wake (by starting ESPNOW) check how to start EPSNow withou NVS and stroging PHY data to RTC memory
 [] Use ULP to count
-[] Set ESPNow long range (use a custom define flag)
+[x] Set ESPNow long range (use a custom define flag)
 [] Use Deduplicator to avoid sending EPSNow data if not necessary
 ```c
 // #if CONFIG_ESPNOW_ENABLE_LONG_RANGE

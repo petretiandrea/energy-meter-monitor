@@ -51,7 +51,7 @@ static PulseCounterConfig RTC_DATA_ATTR pulse_config {
 static PulseCounterData RTC_DATA_ATTR data;
 
 uint8_t peer[] = { 0x4a, 0x3f, 0xda, 0x0d, 0xbe, 0xb0 };
-ESPNowSender sender(peer);
+ESPNowSender sender(peer, false);
 
 // Function which runs after exit from deep sleep
 static void RTC_IRAM_ATTR wake_stub_pulse_counter();

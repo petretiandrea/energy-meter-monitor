@@ -12,13 +12,14 @@ class ESPNowSender
 {
 private:
     esp_now_peer_info_t peerInfo;
+    bool use_long_range;
     static bool is_initialized;
-    //static void on_message_sent(const uint8_t *mac_addr, esp_now_send_status_t status);
+    
     void initialize_wifi();
     void initialize_espnow();
 
 public:
-    ESPNowSender(const uint8_t targetAddress[6]);
+    ESPNowSender(const uint8_t targetAddress[6], const bool enable_long_range = false);
 
     bool connect();
     bool send_message(const uint8_t *message, const size_t size);
