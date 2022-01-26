@@ -4,6 +4,7 @@
 #include <freertos/FreeRTOS.h>
 #include <driver/gpio.h>
 #include <driver/adc.h>
+#include <model/PulseCounterData.h>
 
 struct PulseCounterConfig
 {
@@ -11,23 +12,6 @@ struct PulseCounterConfig
     const gpio_drive_cap_t drive_cap;
     const uint64_t filter_us;
     const uint64_t pulse_timeout_us;
-};
-
-struct PulseCounterData
-{
-    uint64_t last_pulse_width_us;
-    uint64_t pulse_count;
-
-    uint64_t last_detected_edge_us;
-    uint64_t last_valid_edge_us;
-
-    public:
-        void initialize() {
-            last_pulse_width_us = 0;
-            pulse_count = 0;
-            last_detected_edge_us = 0;
-            last_valid_edge_us = 0;
-        }
 };
 
 class PulseCounter {

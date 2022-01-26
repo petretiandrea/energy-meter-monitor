@@ -25,32 +25,36 @@
 #include <esp_system.h>
 #include <esp_now.h>
 #include <string.h>
+#include <driver/rtc_io.h>
+
+#include "RfCalibration.h"
 #include "communication/ESPNowSender.h"
+#include "model/PulseCounterData.h"
 #include "model/EnergyMeterMeasure.h"
 
 extern "C" void app_main(void);
 
 #define PULSE_GPIO_NUM GPIO_NUM_32
+#define PULSE_TIMEOUT_US 5 * 60 * 1000 * 1000 // 5min
+#define PULSE_INTERNAL_FILTER_US 100 * 1000 // 100ms
 
-const RTC_DATA_ATTR uint64_t WAKE_UP_TIME = 30 * 1000 * 1000; // 30s
-const uint64_t INTERNAL_FILTER_US = 100 * 1000; // 100ms
-const uint64_t PULSE_TIMEOUT_US = 5 * 60 * 1000 * 1000; // 5min
+const RTC_DATA_ATTR uint64_t WAKE_UP_TIME = 10 * 1000 * 1000; // 30s
 
 // Pulse counter value, stored in RTC_SLOW_MEM
 static uint64_t RTC_DATA_ATTR last_wake_time_us;
 static PulseCounterConfig RTC_DATA_ATTR pulse_config {
     .gpio_num = PULSE_GPIO_NUM,
     .drive_cap = GPIO_DRIVE_CAP_0,
-    .filter_us = INTERNAL_FILTER_US,
+    .filter_us = PULSE_INTERNAL_FILTER_US,
     .pulse_timeout_us = PULSE_TIMEOUT_US
 };
 static PulseCounterData RTC_DATA_ATTR data;
 
-// Function which runs after exit from deep sleep
-static void RTC_IRAM_ATTR wake_stub_pulse_counter();
-
 uint8_t peer[] = { 0x4a, 0x3f, 0xda, 0x0d, 0xbe, 0xb0 };
 ESPNowSender sender(peer);
+
+// Function which runs after exit from deep sleep
+static void RTC_IRAM_ATTR wake_stub_pulse_counter();
 
 void app_main(void) {
     // First of all setup pulse counter and attach interrupt. 
@@ -59,33 +63,29 @@ void app_main(void) {
     PulseCounter::attach_intterupt(&pulse_config, &data);
 
     auto wakeup_reason = rtc_get_reset_reason(0);
-
-    if (wakeup_reason == DEEPSLEEP_RESET) {
-        printf("Wake up from deep sleep\n");
-        auto toSend = EnergyMeterMeasure {
-            .current_consumption = data.last_pulse_width_us > 0 ? (60.0f * 1000.0f) / (data.last_pulse_width_us / 1000.0f) : 0.0f,
-            .pulse_count = data.pulse_count
-        };
-        nvs_flash_init();
-        sender.connect();
-        sender.send_message((uint8_t*) &toSend, sizeof(toSend));
-    } else {
-        // first boot
+    if (wakeup_reason != DEEPSLEEP_RESET) {
         printf("First boot...setting up initialization phase\n");
         last_wake_time_us = 0;
         data.initialize();
+        calibrate_rf();
+    } else {
+        printf("Wake up from deep sleep\n");
+        auto toSend = EnergyMeterMeasureFactory::createBy(&data);
+        restore_calibration_from_rtc();
+        sender.connect();
+        sender.send_message((uint8_t*) &toSend, sizeof(toSend));
     }
 
-    // TODO: send data using ESP-NOW
-
     printf("Going to deep...\n");
-    
     // reatain gpio pad and Enter deep sleep
     gpio_hold_en(pulse_config.gpio_num);
     gpio_deep_sleep_hold_en();
     esp_set_deep_sleep_wake_stub(&wake_stub_pulse_counter);
     esp_sleep_enable_ext1_wakeup(1ULL << static_cast<uint32_t>(pulse_config.gpio_num), ESP_EXT1_WAKEUP_ANY_HIGH);
     
+    rtc_gpio_isolate(GPIO_NUM_12);
+    rtc_gpio_isolate(GPIO_NUM_15);
+    esp_deep_sleep_disable_rom_logging(); // suppress boot messages
     // set last wake time before go to sleep. Assigned here automatically exclude the time spent while is wake.
     last_wake_time_us = rtc_time_get_us();
     esp_deep_sleep_start();

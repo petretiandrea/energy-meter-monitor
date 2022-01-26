@@ -29,6 +29,7 @@ void ESPNowSender::initialize_wifi() {
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    cfg.nvs_enable = false;
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
@@ -39,4 +40,5 @@ void ESPNowSender::initialize_espnow() {
     ESP_ERROR_CHECK(esp_now_init());
     this->peerInfo.channel = 0;
     this->peerInfo.encrypt = false;
+    this->peerInfo.ifidx = WIFI_IF_STA;
 }

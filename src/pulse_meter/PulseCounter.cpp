@@ -10,6 +10,32 @@
     ((REG_GET_FIELD(RTC_GPIO_IN_REG, RTC_GPIO_IN_NEXT) \
             & BIT(RTC_GPIO_NUM)) == 0)
 
+
+// TODO: implement reset of pulse counter
+//  const int64_t now = esp_timer_get_time();
+//     const int64_t since_last_edge_us = now - last_valid_edge_us; // microseconds
+
+//     const uint32_t time_since_valid_edge_us = now - this->last_valid_edge_us;
+//     if ((this->last_valid_edge_us != 0) && (time_since_valid_edge_us > this->timeout_us)) {
+//         printf("No pulse detected for %us, assuming 0 pulses/min\n", time_since_valid_edge_us / 1000000);
+//         this->last_valid_edge_us = 0;
+//         this->pulse_width_us = 0;
+//     }
+
+//     const uint32_t pulse_width_ms = this->pulse_width_us / 1000;
+//     if (this->pulse_width_dedupe.next(pulse_width_ms)) {
+//         if (pulse_width_ms == 0) {
+//             printf("No pulse width\n");
+//         } else {
+//             printf("Count %lf\n", ((60.0f * 1000.0f) / pulse_width_ms));
+//         }
+//     }
+
+//     const uint32_t total_pulses = this->total_pulses;
+//     if (this->total_dedupe.next(total_pulses)) {
+//         printf("Total pulses: %d\n", total_pulses);
+//     }
+
 static const char RTC_RODATA_ATTR wake_pulse_count[] = "Pulses: %lld\n";
 
 struct InterruptDataHandler {
