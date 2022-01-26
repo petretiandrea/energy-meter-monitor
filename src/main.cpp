@@ -29,7 +29,7 @@ extern "C" void app_main(void);
 
 #define PULSE_GPIO_NUM GPIO_NUM_32
 
-const RTC_DATA_ATTR uint64_t WAKE_UP_TIME = 0 * 1000 * 1000; // 30s
+const RTC_DATA_ATTR uint64_t WAKE_UP_TIME = 10 * 1000 * 1000; // 30s
 const uint64_t INTERNAL_FILTER_US = 100 * 1000; // 100ms
 const uint64_t PULSE_TIMEOUT_US = 5 * 60 * 1000 * 1000; // 5min
 
@@ -50,14 +50,14 @@ static void RTC_IRAM_ATTR wake_stub_pulse_counter();
 
 void app_main(void) {
 
+    // First of all setup pulse counter and attach interrupt. 
+    // This avoid loosing pulse while chip is wake.
+    PulseCounter::setup(&pulse_config);
+    PulseCounter::attach_intterupt(&pulse_config, &data);
+
     auto wakeup_reason = rtc_get_reset_reason(0);
 
     if (wakeup_reason == DEEPSLEEP_RESET) {
-        gpio_reset_pin(GPIO_NUM_33);
-        gpio_set_direction(GPIO_NUM_33, GPIO_MODE_OUTPUT);
-        gpio_set_level(GPIO_NUM_33, 1);
-        vTaskDelay(100 / portTICK_PERIOD_MS);
-        gpio_set_level(GPIO_NUM_33, 0);
         printf("Wake up from deep sleep\n");
         printf("Pulse count=%lld\n", data.pulse_count);
         if (data.last_pulse_width_us > 0) {
@@ -71,9 +71,6 @@ void app_main(void) {
         last_wake_time_us = 0;
         data.initialize();
     }
-
-    // Setup pulse counter pins
-    PulseCounter::setup(&pulse_config);
 
     // TODO: send data using ESP-NOW
 
@@ -93,10 +90,6 @@ void app_main(void) {
 static void RTC_IRAM_ATTR wake_stub_pulse_counter()
 {
     const uint64_t now = rtc_time_get_us();
-
-    // We wait for signal go to low, looking at rising edges.
-    // So while is true wait
-    while (!PulseCounter::is_low(&pulse_config));
 
     PulseCounter::update_pulses_if_needed(&data, &pulse_config, now);
     
