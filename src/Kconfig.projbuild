@@ -1,0 +1,36 @@
+menu "Energy Meter Monitor"
+
+    config PULSE_GPIO_NUM
+        int "Gpio Number for the pulse photoresistor"
+        range 0 33
+        default 32
+        help
+            Defines the gpio where photoresistor is connected 
+
+    config WAKE_UP_TIME
+        int "Wake up time period in seconds"
+        default 30
+        help
+            Defines the wake up time period in seconds. At each wake up it sends data through esp now.
+
+    config PULSE_TIMEOUT_US
+        int "Timeout in microseconds after which reset the pulses. Default is 5 minutes"
+        default 300000000 
+        help
+            Defines the max timeout after which if there is no pulse, the total is reset.
+
+    config PULSE_INTERNAL_FILTER_US
+        int "Internal filter in microseconds. Default is 100 milliseconds"
+        default 100000
+        help
+            Defines the internal filter in microseconds to consider the pulse a valid one. 
+
+    config USE_LONG_RANGE
+        bool "Use long range for espnow"
+        default y
+        help
+            Enabled the long range wifi mode for esp now sender
+    
+    
+
+endmenu

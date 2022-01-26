@@ -32,26 +32,29 @@
 #include "model/PulseCounterData.h"
 #include "model/EnergyMeterMeasure.h"
 
+#include "sdkconfig.h"
+
 extern "C" void app_main(void);
 
-#define PULSE_GPIO_NUM GPIO_NUM_32
-#define PULSE_TIMEOUT_US 5 * 60 * 1000 * 1000 // 5min
-#define PULSE_INTERNAL_FILTER_US 100 * 1000 // 100ms
-
-const RTC_DATA_ATTR uint64_t WAKE_UP_TIME = 10 * 1000 * 1000; // 30s
+const RTC_DATA_ATTR uint64_t WAKE_UP_TIME = CONFIG_WAKE_UP_TIME * 1000 * 1000; // 30s
 
 // Pulse counter value, stored in RTC_SLOW_MEM
 static uint64_t RTC_DATA_ATTR last_wake_time_us;
 static PulseCounterConfig RTC_DATA_ATTR pulse_config {
-    .gpio_num = PULSE_GPIO_NUM,
+    .gpio_num = (gpio_num_t) CONFIG_PULSE_GPIO_NUM,
     .drive_cap = GPIO_DRIVE_CAP_0,
-    .filter_us = PULSE_INTERNAL_FILTER_US,
-    .pulse_timeout_us = PULSE_TIMEOUT_US
+    .filter_us = CONFIG_PULSE_INTERNAL_FILTER_US,
+    .pulse_timeout_us = CONFIG_PULSE_TIMEOUT_US
 };
 static PulseCounterData RTC_DATA_ATTR data;
 
 uint8_t peer[] = { 0x4a, 0x3f, 0xda, 0x0d, 0xbe, 0xb0 };
-ESPNowSender sender(peer, false);
+
+#ifdef CONFIG_USE_LONG_RANGE
+    ESPNowSender sender(peer, CONFIG_USE_LONG_RANGE);
+#else
+    ESPNowSender sender(peer);
+#endif
 
 // Function which runs after exit from deep sleep
 static void RTC_IRAM_ATTR wake_stub_pulse_counter();
