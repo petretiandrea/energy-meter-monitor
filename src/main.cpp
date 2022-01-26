@@ -20,8 +20,7 @@
 #include "soc/rtc_io_reg.h"
 #include "soc/uart_reg.h"
 #include "soc/timer_group_reg.h"
-#include "PulseMeter.h"
-#include "PulseCounter.h"
+#include "pulse_meter/PulseCounter.h"
 #include "rtc_safe_utils.h"
 #include <esp_system.h>
 
@@ -32,8 +31,6 @@ extern "C" void app_main(void);
 const RTC_DATA_ATTR uint64_t WAKE_UP_TIME = 10 * 1000 * 1000; // 30s
 const uint64_t INTERNAL_FILTER_US = 100 * 1000; // 100ms
 const uint64_t PULSE_TIMEOUT_US = 5 * 60 * 1000 * 1000; // 5min
-
-PulseMeter pulseMeter;
 
 // Pulse counter value, stored in RTC_SLOW_MEM
 static uint64_t RTC_DATA_ATTR last_wake_time_us;

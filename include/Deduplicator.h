@@ -1,3 +1,9 @@
+
+/**
+ * @brief Simple class to avoid duplicate measurements.
+ * 
+ * @tparam T type of the value to deduplicate
+ */
 template<typename T> class Deduplicator {
  public:
   bool next(T value) {
