@@ -1,5 +1,17 @@
 menu "Energy Meter Monitor"
 
+    config DEVICE_NAME
+        string "Device Name"
+        default "Energy Meter"
+        help 
+            The name of the device
+
+    config PULSE_RATE
+        int "impulses/kWh"
+        default 1000
+        help 
+            The rate of pulses for kWh
+
     config PULSE_GPIO_NUM
         int "Gpio Number for the pulse photoresistor"
         range 0 33

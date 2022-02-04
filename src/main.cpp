@@ -31,6 +31,7 @@
 #include "communication/ESPNowSender.h"
 #include "model/PulseCounterData.h"
 #include "model/EnergyMeterMeasure.h"
+#include "protocol/edge/Protocol.h"
 
 #include "sdkconfig.h"
 
@@ -51,7 +52,7 @@ static PulseCounterData RTC_DATA_ATTR data;
 uint8_t peer[] = { 0x4a, 0x3f, 0xda, 0x0d, 0xbe, 0xb0 };
 
 #ifdef CONFIG_USE_LONG_RANGE
-    ESPNowSender sender(peer, CONFIG_USE_LONG_RANGE);
+    ESPNowSender sender(peer, 9, CONFIG_USE_LONG_RANGE);
 #else
     ESPNowSender sender(peer);
 #endif
@@ -60,6 +61,7 @@ uint8_t peer[] = { 0x4a, 0x3f, 0xda, 0x0d, 0xbe, 0xb0 };
 static void RTC_IRAM_ATTR wake_stub_pulse_counter();
 
 void app_main(void) {
+
     // First of all setup pulse counter and attach interrupt. 
     // This avoid loosing pulse while chip is wake.
     PulseCounter::setup(&pulse_config);
@@ -71,12 +73,33 @@ void app_main(void) {
         last_wake_time_us = 0;
         data.initialize();
         calibrate_rf();
+
+        // send announcement
+        protocol::edge::ProtocolMessage msg = {
+            .is_announce = true,
+            .type = protocol::edge::DeviceType::POWER_METER_PULSES,
+            .announce = {
+                {.device_name = CONFIG_DEVICE_NAME}
+            },
+        };
+        if (sender.connect()) {
+            sender.send_message((uint8_t*) &msg, sizeof(msg));
+            printf("Sended\n");
+        }
     } else {
         printf("Wake up from deep sleep\n");
-        auto toSend = EnergyMeterMeasureFactory::createBy(&data);
+        auto toSend = parser::toDataMessage(EnergyMeterMeasureFactory::createBy(&data, CONFIG_PULSE_RATE));
+        protocol::edge::ProtocolMessage msg = {
+            .is_announce = false,
+            .type = protocol::edge::DeviceType::POWER_METER_PULSES,
+            .data = *toSend,
+        };
         restore_calibration_from_rtc();
-        sender.connect();
-        sender.send_message((uint8_t*) &toSend, sizeof(toSend));
+        if (sender.connect()) {
+            sender.send_message((uint8_t*) &msg, sizeof(msg));
+            printf("Sended measures\n");
+        }
+        delete toSend;
     }
 
     printf("Going to deep...\n");
