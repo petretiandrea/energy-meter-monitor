@@ -49,12 +49,13 @@ static PulseCounterConfig RTC_DATA_ATTR pulse_config {
 };
 static PulseCounterData RTC_DATA_ATTR data;
 
-uint8_t peer[] = { 0x4a, 0x3f, 0xda, 0x0d, 0xbe, 0xb0 };
+//uint8_t peer[] = { 0x4a, 0x3f, 0xda, 0x0d, 0xbe, 0xb0 };
+uint8_t peer[] = { 0x4a, 0x3f, 0xda, 0x0d, 0xbb, 0xce };
 
 #ifdef CONFIG_USE_LONG_RANGE
-    ESPNowSender sender(peer, 9, CONFIG_USE_LONG_RANGE);
+    ESPNowSender sender(peer, 0, CONFIG_USE_LONG_RANGE);
 #else
-    ESPNowSender sender(peer);
+    ESPNowSender sender(peer, 0 , false);
 #endif
 
 // Function which runs after exit from deep sleep
@@ -84,6 +85,7 @@ void app_main(void) {
         };
         if (sender.connect()) {
             sender.send_message((uint8_t*) &msg, sizeof(msg));
+            vTaskDelay(500 / portTICK_PERIOD_MS); // litte delay to send before sleep
             printf("Sended\n");
         }
     } else {
@@ -104,17 +106,19 @@ void app_main(void) {
 
     printf("Going to deep...\n");
     // reatain gpio pad and Enter deep sleep
-    gpio_hold_en(pulse_config.gpio_num);
-    gpio_deep_sleep_hold_en();
-    esp_set_deep_sleep_wake_stub(&wake_stub_pulse_counter);
-    esp_sleep_enable_ext1_wakeup(1ULL << static_cast<uint32_t>(pulse_config.gpio_num), ESP_EXT1_WAKEUP_ANY_HIGH);
+    // gpio_hold_en(pulse_config.gpio_num);
+    // gpio_deep_sleep_hold_en();
+    // esp_set_deep_sleep_wake_stub(&wake_stub_pulse_counter);
+    // esp_sleep_enable_ext1_wakeup(1ULL << static_cast<uint32_t>(pulse_config.gpio_num), ESP_EXT1_WAKEUP_ANY_HIGH);
     
-    rtc_gpio_isolate(GPIO_NUM_12);
-    rtc_gpio_isolate(GPIO_NUM_15);
-    esp_deep_sleep_disable_rom_logging(); // suppress boot messages
-    // set last wake time before go to sleep. Assigned here automatically exclude the time spent while is wake.
-    last_wake_time_us = rtc_time_get_us();
-    esp_deep_sleep_start();
+    // rtc_gpio_isolate(GPIO_NUM_12);
+    // rtc_gpio_isolate(GPIO_NUM_15);
+    // esp_deep_sleep_disable_rom_logging(); // suppress boot messages
+    // // set last wake time before go to sleep. Assigned here automatically exclude the time spent while is wake.
+    // esp_wifi_stop();
+    // printf("Going to deep2...\n");
+    // last_wake_time_us = rtc_time_get_us();
+    // esp_deep_sleep_start();
 };
 
 static void RTC_IRAM_ATTR wake_stub_pulse_counter()

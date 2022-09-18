@@ -77,6 +77,7 @@ RTC_IRAM_ATTR void PulseCounter::update_pulses_if_needed(PulseCounterData *data,
 {
     // We wait for signal go to low, looking at rising edges.
     // So while is true wait
+    ets_printf(wake_pulse_count, data->pulse_count);
     while (!PulseCounter::is_low(config->gpio_num));
 
     // Check to see if we should filter this edge out

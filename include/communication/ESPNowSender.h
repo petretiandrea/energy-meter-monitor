@@ -16,6 +16,7 @@ private:
     bool use_long_range;
     static bool is_initialized;
     
+
     void initialize_wifi();
     void initialize_espnow();
 
